@@ -4,7 +4,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Interface](https://img.shields.io/badge/UI-CustomTkinter-blueviolet.svg)](https://github.com/TomSchimansky/CustomTkinter)
 [![API](https://img.shields.io/badge/Telegram-Telethon%20MTProto-blue.svg)](https://github.com/LonamiWebs/Telethon)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
+[![Vibe Coding](https://img.shields.io/badge/Metodologia-Vibe%20Coding-ff69b4.svg)]()
+[![AI Assistant](https://img.shields.io/badge/AI%20Assistant-Google%20Antigravity%20v2.12.2-4285F4.svg)]()
+
+> 💡 **Nota de Desenvolvimento:** Este software foi integralmente desenvolvido através de **Vibe Coding**, com assistência e co-autoria técnica da ferramenta de Inteligência Artificial **Google Antigravity (versão 2.12.2)**, integrando princípios de engenharia de software, conformidade ética com a LGPD e design de experiência do usuário.
 
 Um aplicativo desktop moderno, robusto e amigável para **coleta, extração e catalogação ética de mensagens, reações e mídias** de grupos e canais do Telegram.
 
@@ -138,8 +141,20 @@ python -m unittest tests/test_tcc_catalog.py
 
 ---
 
+## 🤖 Metodologia de Desenvolvimento: Vibe Coding com IA
+
+Este projeto foi concebido e construído utilizando a metodologia de **Vibe Coding** em colaboração contínua com a ferramenta de Inteligência Artificial **Google Antigravity (versão 2.12.2)**.
+
+O processo combinou a supervisão humana e requisitos do pesquisador com assistência de agentes de IA:
+- **Engenharia Orientada a Skills:** Utilização de personas e habilidades especializadas em integração com APIs (`Telethon`/MTProto), arquitetura de banco de dados (SQLite WAL e mitigação de concorrência), design de interfaces gráficas modernas (`CustomTkinter`), testes contínuos de qualidade (`unittest`) e estilização de planilhas (`openpyxl`).
+- **Rigor Ético e Científico:** Desenvolvimento direcionado à pesquisa acadêmica, com garantia de conformidade com a LGPD e resoluções éticas de pesquisa em mídias sociais (CNS 510/2016).
+- **Ciclo Iterativo Ágil:** Todo o fluxo — desde a definição dos requisitos até o empacotamento do executável Windows com ícone multi-resolução e publicação — foi orquestrado com o **Google Antigravity v2.12.2**.
+
+---
+
 ## 📄 Licença
 
 Este projeto está licenciado sob a **Licença MIT** — consulte o arquivo [LICENSE](LICENSE) para obter mais detalhes.
 
 Sinta-se à vontade para utilizar, modificar e citar este software em suas pesquisas e publicações acadêmicas!
+
