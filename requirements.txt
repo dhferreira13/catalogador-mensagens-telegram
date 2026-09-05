@@ -1,0 +1,22 @@
+# Coleta e Comunicação com Telegram API
+telethon>=1.36.0
+
+# Processamento e Manipulação de Dados
+pandas>=2.2.0
+openpyxl>=3.1.2
+
+# Banco de Dados
+SQLAlchemy>=2.0.0
+
+# Interface Gráfica e Imagens (Desktop)
+customtkinter>=6.0.0
+pillow>=10.0.0
+
+# Empacotamento Windows (.exe)
+pyinstaller>=6.0.0
+
+# Utilitários e Ambiente
+python-dotenv>=1.0.0
+pydantic>=2.7.0
+tqdm>=4.66.0
+rich>=13.7.0
