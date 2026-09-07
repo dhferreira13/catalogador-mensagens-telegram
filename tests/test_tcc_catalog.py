@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import openpyxl
 
-from src.utils.paths import get_output_dir, get_medias_dir, get_sheets_dir
+from src.utils.paths import get_output_dir, get_medias_dir, get_sheets_dir, get_media_subfolder, get_media_subfolder_name
 from src.pipeline.cleaner import anonymize_user, extract_urls, clean_text_for_nlp
 from src.pipeline.filters import parse_date_to_brt, BRT
 from src.collectors.telegram_collector import format_reactions
@@ -25,6 +25,31 @@ class TestTCCCatalog(unittest.TestCase):
         self.assertTrue(sheets_dir.exists())
         self.assertEqual(medias_dir.name, "Mídias")
         self.assertEqual(sheets_dir.name, "Planilhas de Catalogação")
+
+    def test_media_subfolder_naming(self):
+        """Verifica se a subpasta de mídias é nomeada corretamente por dia ou período."""
+        # Coleta diária (mesmo dia): Mídias DD-MM
+        dt_start_daily = datetime(2026, 9, 2, 0, 0, 0)
+        dt_end_daily = datetime(2026, 9, 2, 23, 59, 59)
+        self.assertEqual(get_media_subfolder_name(dt_start_daily, dt_end_daily), "Mídias 02-09")
+
+        subfolder_daily = get_media_subfolder(dt_start_daily, dt_end_daily)
+        self.assertEqual(subfolder_daily.name, "Mídias 02-09")
+        self.assertTrue(subfolder_daily.exists())
+
+        # Coleta por período entre dias (mesmo ano): Mídias DD-MM a DD-MM
+        dt_start_period = datetime(2026, 9, 2, 0, 0, 0)
+        dt_end_period = datetime(2026, 9, 5, 23, 59, 59)
+        self.assertEqual(get_media_subfolder_name(dt_start_period, dt_end_period), "Mídias 02-09 a 05-09")
+
+        subfolder_period = get_media_subfolder(dt_start_period, dt_end_period)
+        self.assertEqual(subfolder_period.name, "Mídias 02-09 a 05-09")
+        self.assertTrue(subfolder_period.exists())
+
+        # Coleta entre anos distintos
+        dt_start_year = datetime(2025, 12, 31, 0, 0, 0)
+        dt_end_year = datetime(2026, 1, 2, 23, 59, 59)
+        self.assertEqual(get_media_subfolder_name(dt_start_year, dt_end_year), "Mídias 31-12-2025 a 02-01-2026")
 
     def test_media_filename_standard(self):
         """Verifica a padronização: Iddamensagem_data_horário.ext."""

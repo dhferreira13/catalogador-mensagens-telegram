@@ -1,5 +1,7 @@
 import sys
 from pathlib import Path
+from datetime import datetime
+from typing import Optional
 
 def get_base_dir() -> Path:
     """
@@ -33,6 +35,36 @@ def get_medias_dir() -> Path:
     """Retorna a pasta output/Mídias."""
     get_output_dir()
     return get_base_dir() / "output" / "Mídias"
+
+def get_media_subfolder_name(start_dt: Optional[datetime], end_dt: Optional[datetime]) -> str:
+    """
+    Retorna o nome padronizado da subpasta de mídias conforme o período solicitado.
+    Substitui barras '/' por hífens '-' para garantir compatibilidade com o sistema de arquivos do Windows.
+    Exemplos:
+        - Coleta diária (ex: 02/09/2026 a 02/09/2026): 'Mídias 02-09'
+        - Coleta entre dias no mesmo ano (ex: 02/09/2026 a 05/09/2026): 'Mídias 02-09 a 05-09'
+        - Coleta entre anos distintos: 'Mídias 02-09-2025 a 05-09-2026'
+    """
+    if not start_dt or not end_dt:
+        return "Mídias Gerais"
+
+    if start_dt.date() == end_dt.date():
+        return f"Mídias {start_dt.strftime('%d-%m')}"
+    elif start_dt.year == end_dt.year:
+        return f"Mídias {start_dt.strftime('%d-%m')} a {end_dt.strftime('%d-%m')}"
+    else:
+        return f"Mídias {start_dt.strftime('%d-%m-%Y')} a {end_dt.strftime('%d-%m-%Y')}"
+
+def get_media_subfolder(start_dt: Optional[datetime], end_dt: Optional[datetime]) -> Path:
+    """
+    Retorna o caminho da subpasta dentro de output/Mídias correspondente ao período de coleta.
+    Garante a criação automática da pasta no disco.
+    """
+    medias_dir = get_medias_dir()
+    subfolder_name = get_media_subfolder_name(start_dt, end_dt)
+    target_dir = medias_dir / subfolder_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
 
 def get_sheets_dir() -> Path:
     """Retorna a pasta output/Planilhas de Catalogação."""

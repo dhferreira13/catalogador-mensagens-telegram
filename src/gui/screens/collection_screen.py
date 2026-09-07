@@ -469,6 +469,9 @@ class CollectionScreen(ctk.CTkFrame):
                 end_dt=dt_end
             )
 
+            media_folder_name = result.get("media_folder_name", "") if result else ""
+            if media_folder_name:
+                self.after(0, lambda: self._log(f"📁 Mídias organizadas em: output/Mídias/{media_folder_name}"))
             self.after(0, lambda: self._log(f"✅ Planilha salva com sucesso em:\n{excel_path}"))
             self.after(0, lambda: self._log("🎉 Processo completo! Clique em 'Abrir Pasta Output' para visualizar os arquivos."))
 

@@ -16,7 +16,7 @@ from telethon.tl.types import (
     DocumentAttributeVideo
 )
 
-from src.utils.paths import get_medias_dir, get_data_dir
+from src.utils.paths import get_medias_dir, get_data_dir, get_media_subfolder, get_media_subfolder_name
 from src.utils.session_patch import apply_telethon_sqlite_patch
 from src.pipeline.filters import parse_date_to_brt, classify_week
 from src.pipeline.cleaner import anonymize_user, extract_urls, clean_text_for_nlp
@@ -95,6 +95,8 @@ async def collect_messages(
     """
     init_db()
     medias_dir = get_medias_dir()
+    target_media_dir = get_media_subfolder(start_dt_brt, end_dt_brt)
+    media_subfolder_name = target_media_dir.name
 
     def report(scanned: int, saved: int, media: int, dt: Optional[datetime], status: str):
         if progress_callback:
@@ -193,32 +195,36 @@ async def collect_messages(
                 # Padrão: {Iddamensagem}_{data}_{horário}
                 base_name = f"{tg_msg.id}_{date_str}_{time_str}"
                 
-                # Verifica se o arquivo já foi baixado anteriormente
-                existing_files = list(medias_dir.glob(f"{base_name}.*"))
-                if existing_files:
-                    saved_media_filename = existing_files[0].name
+                # Verifica se o arquivo já foi baixado anteriormente na subpasta do período ou na raiz de mídias
+                existing_in_subfolder = list(target_media_dir.glob(f"{base_name}.*"))
+                if existing_in_subfolder:
+                    saved_media_filename = f"{media_subfolder_name}/{existing_in_subfolder[0].name}"
                 else:
-                    report(scanned_count, saved_count, media_count, dt_brt, f"Baixando mídia da mensagem #{tg_msg.id} ({media_type})...")
-                    try:
-                        download_dest = str(medias_dir / base_name)
-                        downloaded_path = await client.download_media(tg_msg, file=download_dest)
-                        if downloaded_path:
-                            saved_media_filename = Path(downloaded_path).name
-                            media_count += 1
-                    except FloodWaitError as fe:
-                        report(scanned_count, saved_count, media_count, dt_brt, f"Pausa temporária solicitada pelo Telegram ({fe.seconds}s)...")
-                        await asyncio.sleep(fe.seconds + 1)
-                        # Tenta novamente
+                    legacy_files = list(medias_dir.glob(f"{base_name}.*"))
+                    if legacy_files:
+                        saved_media_filename = legacy_files[0].name
+                    else:
+                        report(scanned_count, saved_count, media_count, dt_brt, f"Baixando mídia da mensagem #{tg_msg.id} ({media_type}) em '{media_subfolder_name}'...")
+                        download_dest = str(target_media_dir / base_name)
                         try:
                             downloaded_path = await client.download_media(tg_msg, file=download_dest)
                             if downloaded_path:
-                                saved_media_filename = Path(downloaded_path).name
+                                saved_media_filename = f"{media_subfolder_name}/{Path(downloaded_path).name}"
                                 media_count += 1
-                        except Exception:
+                        except FloodWaitError as fe:
+                            report(scanned_count, saved_count, media_count, dt_brt, f"Pausa temporária solicitada pelo Telegram ({fe.seconds}s)...")
+                            await asyncio.sleep(fe.seconds + 1)
+                            # Tenta novamente
+                            try:
+                                downloaded_path = await client.download_media(tg_msg, file=download_dest)
+                                if downloaded_path:
+                                    saved_media_filename = f"{media_subfolder_name}/{Path(downloaded_path).name}"
+                                    media_count += 1
+                            except Exception:
+                                pass
+                        except Exception as me:
+                            # Falha pontual de download não deve interromper a coleta
                             pass
-                    except Exception as me:
-                        # Falha pontual de download não deve interromper a coleta
-                        pass
 
             # Anonimização estrita do participante (Ética em Pesquisa)
             sender_id = tg_msg.sender_id
@@ -325,12 +331,13 @@ async def collect_messages(
     finally:
         db.close()
 
-    report(scanned_count, saved_count, media_count, None, f"Coleta finalizada com sucesso! {saved_count} mensagens salvas, {media_count} mídias baixadas.")
+    report(scanned_count, saved_count, media_count, None, f"Coleta finalizada com sucesso! {saved_count} mensagens salvas, {media_count} mídias baixadas na pasta '{media_subfolder_name}'.")
 
     return {
         "chat_title": chat_title,
         "chat_id": chat_id,
         "scanned_count": scanned_count,
         "saved_count": saved_count,
-        "media_count": media_count
+        "media_count": media_count,
+        "media_folder_name": media_subfolder_name
     }

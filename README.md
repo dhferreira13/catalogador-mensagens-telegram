@@ -22,7 +22,7 @@ Projetado especialmente para **pesquisadores acadêmicos** (Comunicação, Ciên
 * ⏱️ **Filtros Temporais com Precisão de Minutos:** Defina a data de início e término com seletores independentes de horas e minutos (`DD/MM/AAAA HH:MM`).
 * 📊 **Monitoramento em Tempo Real:** Cronômetro dinâmico em tempo real (`00:00:00`), contadores de mensagens varridas/salvas e console humanizado.
 * 👑 **Identificação de Administradores e Bots:** Detecta se quem enviou ou encaminhou a mensagem possui privilégios de administrador ou se é um robô.
-* 🖼️ **Download Padronizado de Mídias:** Salva fotos, vídeos e GIFs automaticamente com nomenclatura acadêmica `{ID}_{Data}_{Horário}.{ext}`.
+* 🖼️ **Download e Separação de Mídias por Dia/Período:** Salva fotos, vídeos e GIFs automaticamente organizados em subpastas por data de coleta (ex: `output/Mídias/Mídias 02-09/`), com nomenclatura padronizada `{ID}_{Data}_{Horário}.{ext}`.
 * 📑 **Planilha Excel (.xlsx) Profissional:** 15 colunas objetivas estilizadas em Azul Navy com larguras automáticas, quebra de linha de texto, congelamento de painéis e filtros automáticos.
 * 📝 **Sistema Contínuo de Auditoria (`Log.txt`):** Registro detalhado de sucessos, contadores parciais e diagnóstico de exceções em UTF-8.
 
@@ -35,7 +35,7 @@ Projetado especialmente para **pesquisadores acadêmicos** (Comunicação, Ciên
 2. Baixe o arquivo **`Catalogador de Mensagens do Telegram.exe`**.
 3. Dê dois cliques para abrir e usar diretamente em qualquer computador com Windows!
 
-> 💡 **Nota:** O `.exe` é completamente *standalone* (autossuficiente). Quando executado, ele cria automaticamente na mesma pasta onde está salvo os diretórios `output/` (para mídias e planilhas) e `Log.txt`.
+> 💡 **Nota:** O `.exe` é completamente *standalone* (autossuficiente). Quando executado, ele cria automaticamente na mesma pasta onde está salvo os diretórios `output/` (para mídias organizadas e planilhas) e `Log.txt`.
 
 ---
 
@@ -94,7 +94,7 @@ As planilhas são geradas na pasta `output/Planilhas de Catalogação/` contendo
 | 6 | **Origem do Encaminhamento** | Nome do canal/grupo institucional de origem (ou `-`) |
 | 7 | **Possui Mídia?** | `Sim` / `Não` |
 | 8 | **Tipo de Mídia** | `Foto`, `Vídeo`, `GIF`, `Imagem` ou `Nenhuma` |
-| 9 | **Arquivo de Mídia Salvo** | Nome exato do arquivo salvo na pasta `output/Mídias/` |
+| 9 | **Arquivo de Mídia Salvo** | Subpasta e nome do arquivo salvo (ex: `Mídias 02-09/1042_2026-09-02_14-30-22.jpg`) |
 | 10 | **Visualizações** | Quantidade de views no momento da coleta |
 | 11 | **Total de Reações** | Soma total de todas as reações registradas |
 | 12 | **Tipos de Reações** | Emojis e quantidades (ex: `👍 (15), ❤️ (4), 🔥 (2)`) |
@@ -109,9 +109,11 @@ As planilhas são geradas na pasta `output/Planilhas de Catalogação/` contendo
 ```
 output/
 ├── Mídias/
-│   ├── 1042_2026-09-03_14-30-22.jpg
-│   ├── 1043_2026-09-03_14-35-10.mp4
-│   └── 1045_2026-09-03_15-00-00.gif
+│   ├── Mídias 02-09/
+│   │   ├── 1042_2026-09-02_14-30-22.jpg
+│   │   └── 1043_2026-09-02_14-35-10.mp4
+│   └── Mídias 03-09/
+│       └── 1045_2026-09-03_15-00-00.gif
 │
 └── Planilhas de Catalogação/
     └── Catalogacao_NomeDoGrupo_20260905_120000.xlsx
