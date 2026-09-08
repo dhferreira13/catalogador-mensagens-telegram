@@ -11,6 +11,7 @@ SQLAlchemy>=2.0.0
 # Interface Gráfica e Imagens (Desktop)
 customtkinter>=6.0.0
 pillow>=10.0.0
+pystray>=0.19.5
 
 # Empacotamento Windows (.exe)
 pyinstaller>=6.0.0

@@ -52,11 +52,17 @@ def get_media_classification(msg) -> tuple[bool, str]:
     if not msg.media:
         return False, "Nenhuma"
 
-    if isinstance(msg.media, MessageMediaPhoto) or msg.photo:
+    if isinstance(msg.media, MessageMediaPhoto) or getattr(msg, "photo", False):
         return True, "Foto"
 
-    if msg.gif:
+    if getattr(msg, "gif", False):
         return True, "GIF"
+
+    if getattr(msg, "video", False):
+        return True, "Vídeo"
+
+    if getattr(msg, "voice", False) or getattr(msg, "audio", False):
+        return True, "Áudio"
 
     if isinstance(msg.media, MessageMediaDocument) and msg.document:
         mime = getattr(msg.document, "mime_type", "").lower()
@@ -72,12 +78,14 @@ def get_media_classification(msg) -> tuple[bool, str]:
 
         if mime.startswith("video/"):
             return True, "Vídeo"
+        if mime.startswith("audio/"):
+            return True, "Áudio"
         return True, "Documento"
 
     if isinstance(msg.media, MessageMediaWebPage):
         return False, "Nenhuma"
 
-    return True, "Outra Mídia"
+    return True, "Outro Arquivo"
 
 async def collect_messages(
     client: TelegramClient,
@@ -188,8 +196,8 @@ async def collect_messages(
             has_media, media_type = get_media_classification(tg_msg)
             saved_media_filename = None
 
-            # Download de mídia (fotos, imagens, gifs)
-            if download_media_files and has_media and media_type in ["Foto", "GIF", "Imagem", "Vídeo"]:
+            # Download de mídias e anexos (todos os arquivos necessários para o TCC)
+            if download_media_files and has_media and media_type != "Nenhuma":
                 date_str = dt_brt.strftime("%Y-%m-%d")
                 time_str = dt_brt.strftime("%H-%M-%S")
                 # Padrão: {Iddamensagem}_{data}_{horário}
@@ -214,7 +222,6 @@ async def collect_messages(
                         except FloodWaitError as fe:
                             report(scanned_count, saved_count, media_count, dt_brt, f"Pausa temporária solicitada pelo Telegram ({fe.seconds}s)...")
                             await asyncio.sleep(fe.seconds + 1)
-                            # Tenta novamente
                             try:
                                 downloaded_path = await client.download_media(tg_msg, file=download_dest)
                                 if downloaded_path:
@@ -223,7 +230,6 @@ async def collect_messages(
                             except Exception:
                                 pass
                         except Exception as me:
-                            # Falha pontual de download não deve interromper a coleta
                             pass
 
             # Anonimização estrita do participante (Ética em Pesquisa)

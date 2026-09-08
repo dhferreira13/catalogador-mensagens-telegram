@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -8,7 +9,10 @@ def get_base_dir() -> Path:
     Retorna o diretório base da aplicação.
     Quando empacotado pelo PyInstaller (sys.frozen), retorna a pasta onde o .exe está localizado.
     Em ambiente de desenvolvimento, retorna a pasta raiz do repositório.
+    Pode ser sobrescrito via variável de ambiente APP_BASE_DIR.
     """
+    if os.getenv("APP_BASE_DIR"):
+        return Path(os.environ["APP_BASE_DIR"]).resolve()
     if getattr(sys, "frozen", False):
         # Executável compilado (.exe)
         return Path(sys.executable).resolve().parent
