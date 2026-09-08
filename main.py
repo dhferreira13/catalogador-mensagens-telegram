@@ -51,7 +51,7 @@ def main():
 
     # Comando: stream
     parser_stream = subparsers.add_parser("stream", help="Inicia coleta contínua em tempo real (Live Stream)")
-    parser_stream.add_argument("--chat", type=str, default="-1301887300", help="Canal ou grupo alvo")
+    parser_stream.add_argument("--chat", type=str, default=None, help="Canal ou grupo alvo (ex: @canal_exemplo)")
     parser_stream.add_argument("--no-media", action="store_true", help="Desabilitar download de mídias")
 
     args = parser.parse_args()
@@ -86,7 +86,9 @@ def main():
 
     elif args.command == "stream":
         from coletor_tempo_real import main as run_stream
-        sys.argv = [sys.argv[0], "--target", args.chat]
+        sys.argv = [sys.argv[0]]
+        if args.chat:
+            sys.argv.extend(["--target", args.chat])
         if args.no_media:
             sys.argv.append("--no-media")
         run_stream()

@@ -111,13 +111,12 @@ class CollectionScreen(ctk.CTkFrame):
 
         self.entry_target = ctk.CTkEntry(
             params_row,
-            placeholder_text="ID ou @username",
-            width=220,
+            placeholder_text="Ex: @nomedogrupo, link ou ID",
+            width=240,
             height=32,
             font=ctk.CTkFont(family="Segoe UI", size=12)
         )
         self.entry_target.pack(side="left", padx=(0, 14))
-        self.entry_target.insert(0, "-1301887300")
 
         # Data de Referência
         lbl_date = ctk.CTkLabel(params_row, text="📅 Data de Coleta:", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#E2E8F0")
@@ -379,9 +378,11 @@ class CollectionScreen(ctk.CTkFrame):
     def _start_streaming(self):
         if not self.auth_manager or not self.auth_manager.client:
             self._show_alert("Erro de Conexão", "Sessão do Telegram não autenticada. Volte à tela de Credenciais.")
+        target = self.entry_target.get().strip()
+        if not target:
+            self._show_alert("Alvo Não Informado", "Por favor, digite o @username, link ou ID do grupo ou canal do Telegram que deseja monitorar.")
             return
 
-        target = self.entry_target.get().strip() or "-1301887300"
         download_media = bool(self.chk_media.get())
 
         self.is_streaming = True
@@ -485,7 +486,7 @@ class CollectionScreen(ctk.CTkFrame):
             today = datetime.now(BRT).date()
             start_dt = datetime.combine(today, datetime.min.time())
             end_dt = datetime.now(BRT)
-            target = self.entry_target.get().strip() or "-1301887300"
+            target = self.entry_target.get().strip() or None
             try:
                 excel_path = export_to_tcc_spreadsheet(chat_id=target, start_dt=start_dt, end_dt=end_dt)
                 self._show_alert("Planilha Exportada", f"Planilha acumulada de hoje gerada com sucesso:\n\n{Path(excel_path).name}")

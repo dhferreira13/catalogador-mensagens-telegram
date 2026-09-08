@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--date", type=str, default=None, help="Data alvo no formato YYYY-MM-DD (padrão: ontem)")
     parser.add_argument("--start-time", type=str, default=None, help="Horário inicial no formato HH:MM:SS (padrão: 00:00:00)")
     parser.add_argument("--end-time", type=str, default=None, help="Horário final no formato HH:MM:SS (padrão: 23:59:59)")
-    parser.add_argument("--target", type=str, default="-1301887300", help="ID ou username do grupo (padrão: -1301887300)")
+    parser.add_argument("--target", type=str, default=None, help="ID, link ou username do grupo/canal alvo")
     parser.add_argument("--limit", type=int, default=None, help="Limite máximo de mensagens para coletar (para testes rápidos)")
     parser.add_argument("--no-media", action="store_true", help="Desabilitar download de mídias")
     parser.add_argument("--headless", action="store_true", help="Executar sem mini-janela gráfica")

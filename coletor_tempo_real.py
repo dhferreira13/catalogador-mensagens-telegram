@@ -22,7 +22,7 @@ BRT = timezone(timedelta(hours=-3))
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Coletor em Tempo Real do Telegram para TCC")
-    parser.add_argument("--target", type=str, default="-1301887300", help="ID ou username do grupo (padrão: -1301887300)")
+    parser.add_argument("--target", type=str, default=None, help="ID, link ou username do grupo ou canal alvo")
     parser.add_argument("--no-media", action="store_true", help="Desabilitar download de mídias")
     parser.add_argument("--headless", action="store_true", help="Executar sem janela gráfica")
     parser.add_argument("--base-dir", type=str, default=None, help="Diretório base do app (padrão: dist se existir)")
@@ -300,9 +300,6 @@ def main():
         except Exception:
             pass
 
-    log("=" * 60)
-    log(f"Iniciando Coletor em Tempo Real (Live Stream) para o alvo: {args.target}")
-
     config_file = base_dir / "data" / "app_config.json"
     session_file = base_dir / "data" / "telegram_tcc_session"
 
@@ -312,6 +309,16 @@ def main():
 
     with open(config_file, "r", encoding="utf-8") as f:
         config_data = json.load(f)
+
+    target_chat = args.target
+    if not target_chat:
+        target_chat = config_data.get("last_target")
+    if not target_chat:
+        log("ERRO: Alvo de coleta (--target) não informado. Especifique o @username, link ou ID do grupo/canal.")
+        sys.exit(1)
+
+    log("=" * 60)
+    log(f"Iniciando Coletor em Tempo Real (Live Stream) para o alvo: {target_chat}")
 
     api_id = int(config_data.get("api_id", 0))
     api_hash = config_data.get("api_hash", "")
@@ -340,7 +347,7 @@ def main():
 
     collector = TelegramStreamCollector(
         client=client,
-        target_chat=args.target,
+        target_chat=target_chat,
         on_message_callback=on_new_msg,
         on_export_callback=on_export,
         log_callback=log,
@@ -398,7 +405,7 @@ def main():
 
     # Modo interativo com card e system tray
     icon_path = project_root / "assets" / "app_icon.ico"
-    ui = LiveStreamUI(args.target, icon_path, manual_export_action, exit_action)
+    ui = LiveStreamUI(target_chat, icon_path, manual_export_action, exit_action)
     ui.run()
 
 if __name__ == "__main__":
