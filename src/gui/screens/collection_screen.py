@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import subprocess
 import threading
@@ -8,334 +9,548 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Callable
 
+import tkinter as tk
+from tkinter import ttk
 import customtkinter as ctk
 
 from telethon import TelegramClient
 
 from src.utils.paths import get_output_dir, get_medias_dir, get_sheets_dir
 from src.utils.session_patch import apply_telethon_sqlite_patch
+from src.pipeline.filters import BRT, parse_date_to_brt
 from src.collectors.telegram_auth import TelegramAuthManager
-from src.collectors.telegram_collector import collect_messages
+from src.collectors.telegram_stream import TelegramStreamCollector
 from src.exporter.excel_exporter import export_to_tcc_spreadsheet
+from src.db.session import SessionLocal, init_db
+from src.db.models import Message
 
 apply_telethon_sqlite_patch()
 
+COLUMNS_CONFIG = [
+    ("id", "ID Mensagem", 95, "center"),
+    ("date", "Data/Hora (BRT)", 135, "center"),
+    ("bot", "Bot?", 50, "center"),
+    ("admin", "Admin?", 55, "center"),
+    ("forward", "Encam.?", 65, "center"),
+    ("forward_from", "Origem Encaminhamento", 140, "w"),
+    ("has_media", "Mídia?", 55, "center"),
+    ("media_type", "Tipo Mídia", 80, "center"),
+    ("media_file", "Arquivo Mídia Salvo", 180, "w"),
+    ("views", "Visualizações", 85, "center"),
+    ("reactions_count", "Total Reações", 85, "center"),
+    ("reactions", "Tipos de Reações", 120, "w"),
+    ("text", "Texto da Mensagem", 260, "w"),
+    ("sender", "Código Autor (Anônimo)", 130, "center"),
+    ("urls", "Links Extraídos", 160, "w"),
+]
+
 class CollectionScreen(ctk.CTkFrame):
     """
-    Tela 2: Configuração do Alvo, Seletores de Data/Hora, Relógio em Tempo Real,
-    Monitoramento de Coleta e Acesso à Pasta Output.
+    Tela Principal de Coleta: Coleta Automática Quase Instantânea (Live Stream)
+    com Visor de Planilha ao Vivo (com as 15 colunas oficiais do TCC) e
+    fechamento diário automatizado às 23:59:59 (BRT).
     """
+
     def __init__(self, parent, on_back_callback: Callable[[], None]):
         super().__init__(parent, fg_color="transparent")
         self.on_back_callback = on_back_callback
         self.auth_manager: Optional[TelegramAuthManager] = None
-        self.cancel_event: Optional[asyncio.Event] = None
-        
-        self.is_collecting = False
-        self.start_time: Optional[float] = None
-        self.timer_after_id: Optional[str] = None
+        self.collector: Optional[TelegramStreamCollector] = None
+        self.stream_thread: Optional[threading.Thread] = None
+
+        self.is_streaming = False
+        self.today_date = datetime.now(BRT).date()
+        self.today_messages_count = 0
+        self.today_media_count = 0
 
         self._setup_ui()
 
     def set_auth_manager(self, auth_manager: TelegramAuthManager):
-        """Recebe o gerenciador autenticado da Tela 1."""
+        """Recebe o gerenciador autenticado da Tela de Login."""
         self.auth_manager = auth_manager
-        self._log("Sessão autenticada e pronta para catalogação.")
+        self._load_today_cached_messages()
 
     def _setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=0) # Configurações
-        self.grid_rowconfigure(1, weight=1) # Painel de Andamento e Logs
+        self.grid_rowconfigure(0, weight=0) # Configurações e Controles
+        self.grid_rowconfigure(1, weight=1) # Visor de Planilha ao Vivo
 
         # =========================================================================
-        # CARD SUPERIOR: CONFIGURAÇÕES DA COLETA
+        # 1. CARD SUPERIOR: CONFIGURAÇÕES E CONTROLES SIMPLIFICADOS
         # =========================================================================
-        config_card = ctk.CTkFrame(self, corner_radius=12)
-        config_card.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
+        config_card = ctk.CTkFrame(self, corner_radius=12, fg_color="#0F172A", border_width=1, border_color="#334155")
+        config_card.grid(row=0, column=0, padx=12, pady=(10, 8), sticky="ew")
 
-        # Linha 1: Título e Alvo
+        # Cabeçalho do Card
+        top_row = ctk.CTkFrame(config_card, fg_color="transparent")
+        top_row.pack(fill="x", padx=16, pady=(12, 6))
+
         title_lbl = ctk.CTkLabel(
-            config_card,
-            text="Configurações da Coleta de Mensagens",
-            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold")
+            top_row,
+            text="📡 Coleta Automática Instantânea (Live Stream)",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color="#F8FAFC"
         )
-        title_lbl.pack(anchor="w", padx=20, pady=(15, 5))
+        title_lbl.pack(side="left")
 
-        target_frame = ctk.CTkFrame(config_card, fg_color="transparent")
-        target_frame.pack(fill="x", padx=20, pady=(5, 10))
-
-        lbl_target = ctk.CTkLabel(
-            target_frame,
-            text="ID, Link ou @Username do Grupo/Canal:",
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
-        )
-        lbl_target.pack(anchor="w", pady=(0, 3))
-
-        self.entry_target = ctk.CTkEntry(
-            target_frame,
-            placeholder_text="Ex: @grupo_pesquisa, https://t.me/nomedogrupo ou -100123456789",
-            height=38,
-            font=ctk.CTkFont(family="Segoe UI", size=13)
-        )
-        self.entry_target.pack(fill="x")
-
-        # Linha 2: Intervalo Temporal (Início e Fim com Horas e Minutos)
-        time_frame = ctk.CTkFrame(config_card, fg_color="transparent")
-        time_frame.pack(fill="x", padx=20, pady=(0, 10))
-        time_frame.grid_columnconfigure(0, weight=1)
-        time_frame.grid_columnconfigure(1, weight=1)
-
-        # Início
-        start_box = ctk.CTkFrame(time_frame, corner_radius=8)
-        start_box.grid(row=0, column=0, padx=(0, 8), sticky="ew")
-
-        lbl_start = ctk.CTkLabel(
-            start_box,
-            text="📅 Início da Coleta:",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
-        )
-        lbl_start.pack(anchor="w", padx=10, pady=(8, 2))
-
-        start_row = ctk.CTkFrame(start_box, fg_color="transparent")
-        start_row.pack(fill="x", padx=10, pady=(0, 8))
-
-        self.entry_start_date = ctk.CTkEntry(
-            start_row,
-            placeholder_text="DD/MM/AAAA",
-            width=110,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.entry_start_date.pack(side="left", padx=(0, 5))
-        self.entry_start_date.insert(0, "14/09/2026")
-
-        hours_list = [f"{h:02d}" for h in range(24)]
-        minutes_list = [f"{m:02d}" for m in range(60)]
-
-        self.opt_start_hour = ctk.CTkOptionMenu(
-            start_row,
-            values=hours_list,
-            width=65,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.opt_start_hour.pack(side="left", padx=2)
-        self.opt_start_hour.set("00")
-
-        lbl_colon1 = ctk.CTkLabel(start_row, text=":", font=ctk.CTkFont(size=14, weight="bold"))
-        lbl_colon1.pack(side="left", padx=1)
-
-        self.opt_start_min = ctk.CTkOptionMenu(
-            start_row,
-            values=minutes_list,
-            width=65,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.opt_start_min.pack(side="left", padx=2)
-        self.opt_start_min.set("00")
-
-        # Fim
-        end_box = ctk.CTkFrame(time_frame, corner_radius=8)
-        end_box.grid(row=0, column=1, padx=(8, 0), sticky="ew")
-
-        lbl_end = ctk.CTkLabel(
-            end_box,
-            text="📅 Fim da Coleta:",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
-        )
-        lbl_end.pack(anchor="w", padx=10, pady=(8, 2))
-
-        end_row = ctk.CTkFrame(end_box, fg_color="transparent")
-        end_row.pack(fill="x", padx=10, pady=(0, 8))
-
-        self.entry_end_date = ctk.CTkEntry(
-            end_row,
-            placeholder_text="DD/MM/AAAA",
-            width=110,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.entry_end_date.pack(side="left", padx=(0, 5))
-        self.entry_end_date.insert(0, "27/09/2026")
-
-        self.opt_end_hour = ctk.CTkOptionMenu(
-            end_row,
-            values=hours_list,
-            width=65,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.opt_end_hour.pack(side="left", padx=2)
-        self.opt_end_hour.set("23")
-
-        lbl_colon2 = ctk.CTkLabel(end_row, text=":", font=ctk.CTkFont(size=14, weight="bold"))
-        lbl_colon2.pack(side="left", padx=1)
-
-        self.opt_end_min = ctk.CTkOptionMenu(
-            end_row,
-            values=minutes_list,
-            width=65,
-            height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12)
-        )
-        self.opt_end_min.pack(side="left", padx=2)
-        self.opt_end_min.set("59")
-
-        # Linha 3: Botões de Ação
-        actions_frame = ctk.CTkFrame(config_card, fg_color="transparent")
-        actions_frame.pack(fill="x", padx=20, pady=(5, 15))
-
-        self.btn_start = ctk.CTkButton(
-            actions_frame,
-            text="🚀 Iniciar Coleta",
-            height=42,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            fg_color="#16A34A",
-            hover_color="#15803D",
-            command=self._on_start_stop_clicked
-        )
-        self.btn_start.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        self.btn_open_output = ctk.CTkButton(
-            actions_frame,
-            text="📂 Abrir Pasta Output",
-            height=42,
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            fg_color="#2563EB",
-            hover_color="#1D4ED8",
-            command=self._open_output_folder
-        )
-        self.btn_open_output.pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-        self.btn_open_logs = ctk.CTkButton(
-            actions_frame,
-            text="📄 Abrir Log.txt",
-            height=42,
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            fg_color="#0D9488",
-            hover_color="#0F766E",
-            command=self._open_log_file
-        )
-        self.btn_open_logs.pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-        self.btn_back = ctk.CTkButton(
-            actions_frame,
-            text="⚙️ Credenciais",
-            height=42,
-            width=120,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            fg_color="#475569",
-            hover_color="#334155",
-            command=self._on_back_clicked
-        )
-        self.btn_back.pack(side="right", padx=(8, 0))
-
-        # =========================================================================
-        # CARD INFERIOR: PAINEL DE ANDAMENTO, CRONÔMETRO E LOGS
-        # =========================================================================
-        progress_card = ctk.CTkFrame(self, corner_radius=12)
-        progress_card.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
-
-        # Cabeçalho do Monitoramento + RELÓGIO EM TEMPO REAL
-        monitor_header = ctk.CTkFrame(progress_card, fg_color="transparent")
-        monitor_header.pack(fill="x", padx=20, pady=(12, 5))
-
-        lbl_mon_title = ctk.CTkLabel(
-            monitor_header,
-            text="Andamento da Catalogação",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold")
-        )
-        lbl_mon_title.pack(side="left")
-
-        # RELÓGIO COM CRONÔMETRO
-        self.lbl_clock = ctk.CTkLabel(
-            monitor_header,
-            text="⏱️ Tempo Decorrido: 00:00:00",
-            font=ctk.CTkFont(family="Consolas", size=15, weight="bold"),
-            text_color="#38BDF8"
-        )
-        self.lbl_clock.pack(side="right")
-
-        # Contadores Rápidos
-        counters_frame = ctk.CTkFrame(progress_card, corner_radius=8, fg_color="#1E293B")
-        counters_frame.pack(fill="x", padx=20, pady=8)
-        counters_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-        self.lbl_cnt_scanned = ctk.CTkLabel(
-            counters_frame,
-            text="Mensagens Verificadas\n0",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        self.lbl_status_badge = ctk.CTkLabel(
+            top_row,
+            text="⚪ COLETOR PARADO",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color="#94A3B8"
         )
-        self.lbl_cnt_scanned.grid(row=0, column=0, pady=10)
+        self.lbl_status_badge.pack(side="right")
 
-        self.lbl_cnt_saved = ctk.CTkLabel(
-            counters_frame,
-            text="Mensagens no Período\n0",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-            text_color="#4ADE80"
+        # Linha de Parâmetros: Alvo, Data, Horário Limite e Mídias
+        params_row = ctk.CTkFrame(config_card, fg_color="transparent")
+        params_row.pack(fill="x", padx=16, pady=(0, 10))
+
+        # Alvo
+        lbl_target = ctk.CTkLabel(params_row, text="Grupo/Canal:", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#E2E8F0")
+        lbl_target.pack(side="left", padx=(0, 4))
+
+        self.entry_target = ctk.CTkEntry(
+            params_row,
+            placeholder_text="ID ou @username",
+            width=220,
+            height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12)
         )
-        self.lbl_cnt_saved.grid(row=0, column=1, pady=10)
+        self.entry_target.pack(side="left", padx=(0, 14))
+        self.entry_target.insert(0, "-1301887300")
 
-        self.lbl_cnt_media = ctk.CTkLabel(
-            counters_frame,
-            text="Mídias Baixadas\n0",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
-            text_color="#FACC15"
+        # Data de Referência
+        lbl_date = ctk.CTkLabel(params_row, text="📅 Data de Coleta:", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#E2E8F0")
+        lbl_date.pack(side="left", padx=(0, 4))
+
+        self.entry_date = ctk.CTkEntry(
+            params_row,
+            placeholder_text="DD/MM/AAAA",
+            width=110,
+            height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12)
         )
-        self.lbl_cnt_media.grid(row=0, column=2, pady=10)
+        self.entry_date.pack(side="left", padx=(0, 14))
+        self.entry_date.insert(0, datetime.now(BRT).strftime("%d/%m/%Y"))
 
-        # Barra de Progresso
-        self.prog_bar = ctk.CTkProgressBar(progress_card, mode="indeterminate", height=6)
-        self.prog_bar.pack(fill="x", padx=20, pady=(5, 10))
-        self.prog_bar.set(0)
-        self.prog_bar.stop()
+        # Horário Limite Diário
+        lbl_cutoff = ctk.CTkLabel(params_row, text="⏰ Horário Limite Diário:", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#E2E8F0")
+        lbl_cutoff.pack(side="left", padx=(0, 4))
 
-        # Console de Atividade / Logs com rolagem
-        self.log_textbox = ctk.CTkTextbox(
-            progress_card,
-            corner_radius=8,
-            font=ctk.CTkFont(family="Consolas", size=12),
+        self.entry_cutoff = ctk.CTkEntry(
+            params_row,
+            placeholder_text="HH:MM:SS",
+            width=90,
+            height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12)
+        )
+        self.entry_cutoff.pack(side="left", padx=(0, 14))
+        self.entry_cutoff.insert(0, "23:59:59")
+
+        # Download de Mídias
+        self.chk_media = ctk.CTkCheckBox(
+            params_row,
+            text="Baixar Arquivos e Mídias",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color="#E2E8F0"
         )
-        self.log_textbox.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        self.chk_media.pack(side="left", padx=(4, 0))
+        self.chk_media.select()
 
-    def _log(self, message: str):
-        """Adiciona mensagem formatada com timestamp ao console e grava no Log.txt."""
-        from src.utils.logger import log_event
-        log_event(message)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        entry = f"[{timestamp}] {message}\n"
-        self.log_textbox.insert("end", entry)
-        self.log_textbox.see("end")
+        # Barra de Ações e Métricas
+        actions_bar = ctk.CTkFrame(config_card, fg_color="#1E293B", corner_radius=8)
+        actions_bar.pack(fill="x", padx=16, pady=(0, 12))
 
-    def _open_log_file(self):
-        """Abre o arquivo Log.txt no editor de texto padrão."""
-        from src.utils.paths import get_log_file_path
-        log_file = get_log_file_path()
+        # Botão Iniciar / Parar Coleta
+        self.btn_toggle = ctk.CTkButton(
+            actions_bar,
+            text="🚀 Iniciar Coleta Instantânea",
+            height=36,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            fg_color="#16A34A",
+            hover_color="#15803D",
+            command=self._on_toggle_streaming
+        )
+        self.btn_toggle.pack(side="left", padx=8, pady=8)
+
+        # Botão Gerar Planilha do Dia Agora
+        self.btn_export = ctk.CTkButton(
+            actions_bar,
+            text="📊 Gerar Planilha Agora",
+            height=36,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            fg_color="#0284C7",
+            hover_color="#0369A1",
+            command=self._on_manual_export_clicked
+        )
+        self.btn_export.pack(side="left", padx=(0, 8), pady=8)
+
+        # Botões de Utilidades
+        self.btn_output = ctk.CTkButton(
+            actions_bar,
+            text="📂 Pasta Output",
+            height=36,
+            width=110,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self._open_output_folder
+        )
+        self.btn_output.pack(side="left", padx=(0, 6), pady=8)
+
+        self.btn_logs = ctk.CTkButton(
+            actions_bar,
+            text="📄 Log.txt",
+            height=36,
+            width=90,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self._open_log_file
+        )
+        self.btn_logs.pack(side="left", padx=(0, 8), pady=8)
+
+        # Indicador de Métricas ao Vivo
+        self.lbl_metrics = ctk.CTkLabel(
+            actions_bar,
+            text="Mensagens Hoje: 0  |  Mídias Hoje: 0  |  Próximo Fechamento: 23:59:59",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color="#38BDF8"
+        )
+        self.lbl_metrics.pack(side="right", padx=14, pady=8)
+
+        # =========================================================================
+        # 2. CARD INFERIOR: VISOR DE PLANILHA EM TEMPO REAL (TREEVIEW GRID)
+        # =========================================================================
+        grid_card = ctk.CTkFrame(self, corner_radius=12, fg_color="#0F172A", border_width=1, border_color="#334155")
+        grid_card.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="nsew")
+        grid_card.grid_columnconfigure(0, weight=1)
+        grid_card.grid_rowconfigure(1, weight=1)
+
+        # Cabeçalho da Planilha
+        grid_header = ctk.CTkFrame(grid_card, fg_color="transparent")
+        grid_header.grid(row=0, column=0, padx=16, pady=(10, 6), sticky="ew")
+
+        lbl_grid_title = ctk.CTkLabel(
+            grid_header,
+            text="📋 Visor de Planilha em Tempo Real (Espelho da Planilha Oficial .xlsx)",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color="#F8FAFC"
+        )
+        lbl_grid_title.pack(side="left")
+
+        lbl_hint = ctk.CTkLabel(
+            grid_header,
+            text="Dica: Dê dois cliques em qualquer linha para inspecionar os detalhes da mensagem.",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color="#64748B"
+        )
+        lbl_hint.pack(side="right")
+
+        # Container do Treeview com Scrollbars
+        table_frame = tk.Frame(grid_card, bg="#0F172A")
+        table_frame.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+
+        # Estilização ttk para modo escuro moderno
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        style.configure(
+            "LiveGrid.Treeview",
+            background="#0F172A",
+            foreground="#F8FAFC",
+            fieldbackground="#0F172A",
+            rowheight=26,
+            font=("Segoe UI", 10),
+            borderwidth=0
+        )
+        style.configure(
+            "LiveGrid.Treeview.Heading",
+            background="#1E3A8A", # Azul Marinho / Navy Oficial
+            foreground="#FFFFFF",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+            borderwidth=1
+        )
+        style.map(
+            "LiveGrid.Treeview",
+            background=[("selected", "#0284C7")],
+            foreground=[("selected", "#FFFFFF")]
+        )
+        style.map(
+            "LiveGrid.Treeview.Heading",
+            background=[("active", "#1D4ED8")]
+        )
+
+        col_ids = [c[0] for c in COLUMNS_CONFIG]
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=col_ids,
+            show="headings",
+            style="LiveGrid.Treeview",
+            selectmode="browse"
+        )
+
+        for cid, header, width, align in COLUMNS_CONFIG:
+            self.tree.heading(cid, text=header, anchor=align)
+            self.tree.column(cid, width=width, minwidth=40, anchor=align)
+
+        # Scrollbars
+        v_scroll = ctk.CTkScrollbar(table_frame, orientation="vertical", command=self.tree.yview)
+        h_scroll = ctk.CTkScrollbar(table_frame, orientation="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+        # Tags para zebrado elegante
+        self.tree.tag_configure("even", background="#0F172A")
+        self.tree.tag_configure("odd", background="#1E293B")
+        self.tree.tag_configure("new", background="#064E3B", foreground="#A7F3D0") # Destaque suave em verde para mensagem instantânea
+
+        # Evento de duplo clique
+        self.tree.bind("<Double-1>", self._on_row_double_click)
+
+    def _load_today_cached_messages(self):
+        """Carrega mensagens já coletadas hoje do banco de dados SQLite para o visor."""
+        init_db()
+        db = SessionLocal()
         try:
-            if not log_file.exists():
-                with open(log_file, "w", encoding="utf-8") as f:
-                    f.write("Log de execução inicializado.\n")
-            if sys.platform == "win32":
-                os.startfile(log_file)
-            else:
-                subprocess.Popen(["xdg-open", str(log_file)])
-            self._log(f"Arquivo Log.txt aberto com sucesso.")
-        except Exception as e:
-            self._log(f"Erro ao abrir Log.txt: {e}")
+            today = datetime.now(BRT).date()
+            start_today = datetime.combine(today, datetime.min.time())
+            messages = db.query(Message).filter(Message.date_brt >= start_today).order_by(Message.date_brt.desc()).limit(150).all()
 
-    def _update_clock(self):
-        """Atualiza o cronômetro em tempo real a cada 1 segundo."""
-        if self.is_collecting and self.start_time:
-            elapsed = int(time.time() - self.start_time)
-            hours = elapsed // 3600
-            mins = (elapsed % 3600) // 60
-            secs = elapsed % 60
-            clock_str = f"⏱️ Tempo Decorrido: {hours:02d}:{mins:02d}:{secs:02d}"
-            self.lbl_clock.configure(text=clock_str)
-            self.timer_after_id = self.after(1000, self._update_clock)
+            for i, m in enumerate(messages):
+                reacts_display = "-"
+                if m.reactions_json:
+                    try:
+                        r_dict = json.loads(m.reactions_json)
+                        if r_dict:
+                            reacts_display = ", ".join([f"{k} ({v})" for k, v in r_dict.items()])
+                    except Exception:
+                        pass
+
+                tag = "even" if i % 2 == 0 else "odd"
+                self.tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        m.telegram_msg_id,
+                        m.date_brt.strftime("%d/%m/%Y %H:%M:%S"),
+                        "Sim" if m.is_bot else "Não",
+                        "Sim" if getattr(m, 'is_admin', False) else "Não",
+                        "Sim" if m.is_forward else "Não",
+                        m.forward_from_name or "-",
+                        "Sim" if m.has_media else "Não",
+                        m.media_type or "Nenhuma",
+                        m.media_filename or "-",
+                        m.views_count or 0,
+                        m.reactions_count or 0,
+                        reacts_display,
+                        (m.text_raw or "").replace("\n", " ")[:60],
+                        m.sender_id_anon or "-",
+                        m.urls_list or "-"
+                    ),
+                    tags=(tag,)
+                )
+            self.today_messages_count = len(messages)
+            self._update_metrics_label()
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+    def _update_metrics_label(self):
+        cutoff = self.entry_cutoff.get().strip() or "23:59:59"
+        self.lbl_metrics.configure(
+            text=f"Mensagens Hoje: {self.today_messages_count}  |  Mídias Hoje: {self.today_media_count}  |  Próximo Fechamento: {cutoff}"
+        )
+
+    def _on_toggle_streaming(self):
+        """Inicia ou pausa a coleta contínua em tempo real."""
+        if not self.is_streaming:
+            self._start_streaming()
+        else:
+            self._stop_streaming()
+
+    def _start_streaming(self):
+        if not self.auth_manager or not self.auth_manager.client:
+            self._show_alert("Erro de Conexão", "Sessão do Telegram não autenticada. Volte à tela de Credenciais.")
+            return
+
+        target = self.entry_target.get().strip() or "-1301887300"
+        download_media = bool(self.chk_media.get())
+
+        self.is_streaming = True
+        self.btn_toggle.configure(
+            text="⏹️ Parar Coleta",
+            fg_color="#DC2626",
+            hover_color="#B91C1C"
+        )
+        self.lbl_status_badge.configure(text="🟢 AO VIVO - ESCUTANDO", text_color="#22C55E")
+
+        def on_msg_received(info: dict):
+            self.after(0, lambda: self._add_message_to_grid(info))
+
+        def on_export_done(excel_path: str):
+            self.after(0, lambda: self._on_daily_exported(excel_path))
+
+        self.collector = TelegramStreamCollector(
+            client=self.auth_manager.client,
+            target_chat=target,
+            on_message_callback=on_msg_received,
+            on_export_callback=on_export_done,
+            log_callback=print,
+            download_media=download_media
+        )
+
+        def runner():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.collector.start())
+            except Exception as e:
+                print(f"Erro no streaming: {e}")
+            finally:
+                self.after(0, self._on_streaming_stopped)
+
+        self.stream_thread = threading.Thread(target=runner, daemon=True)
+        self.stream_thread.start()
+
+    def _stop_streaming(self):
+        if self.collector:
+            self.collector.stop()
+        self._on_streaming_stopped()
+
+    def _on_streaming_stopped(self):
+        self.is_streaming = False
+        self.btn_toggle.configure(
+            text="🚀 Iniciar Coleta Instantânea",
+            fg_color="#16A34A",
+            hover_color="#15803D"
+        )
+        self.lbl_status_badge.configure(text="⚪ COLETOR PARADO", text_color="#94A3B8")
+
+    def _add_message_to_grid(self, info: dict):
+        """Insere a mensagem instantaneamente no topo do visor da planilha."""
+        self.today_messages_count = info.get("today_messages", self.today_messages_count + 1)
+        self.today_media_count = info.get("today_media", self.today_media_count)
+
+        text_preview = (info.get("text", "") or "").replace("\n", " ")
+        if len(text_preview) > 60:
+            text_preview = text_preview[:58] + "..."
+
+        row_values = (
+            info.get("msg_id"),
+            info.get("date_brt_str", datetime.now(BRT).strftime("%d/%m/%Y %H:%M:%S")),
+            info.get("is_bot", "Não"),
+            info.get("is_admin", "Não"),
+            info.get("is_forward", "Não"),
+            info.get("forward_from", "-"),
+            info.get("has_media", "Não"),
+            info.get("media_type", "Nenhuma"),
+            info.get("media_file", "-"),
+            info.get("views", 0),
+            info.get("reactions_count", 0),
+            info.get("reactions", "-"),
+            text_preview,
+            info.get("sender_anon", "Participante_Anon"),
+            info.get("urls", "-")
+        )
+
+        # Insere no topo com tag de destaque instantâneo
+        item_id = self.tree.insert("", 0, values=row_values, tags=("new",))
+        # Remove tag de destaque após 4 segundos para retornar ao tema escuro padrão
+        self.after(4000, lambda: self.tree.item(item_id, tags=("even",)))
+
+        self._update_metrics_label()
+
+    def _on_daily_exported(self, excel_path: str):
+        file_name = Path(excel_path).name
+        self._show_alert("Fechamento Diário Concluído", f"A planilha oficial do dia foi gerada com sucesso:\n\n{file_name}\n\nSalva em: output/Planilhas de Catalogação/")
+
+    def _on_manual_export_clicked(self):
+        """Gera a planilha acumulada do dia sob demanda."""
+        if self.collector:
+            path = self.collector.trigger_manual_export()
+            if path:
+                self._show_alert("Planilha Exportada", f"Planilha do dia gerada com sucesso:\n\n{Path(path).name}")
+            else:
+                self._show_alert("Aviso", "Não foi possível gerar a planilha no momento.")
+        else:
+            # Exporta diretamente pelo banco de dados
+            today = datetime.now(BRT).date()
+            start_dt = datetime.combine(today, datetime.min.time())
+            end_dt = datetime.now(BRT)
+            target = self.entry_target.get().strip() or "-1301887300"
+            try:
+                excel_path = export_to_tcc_spreadsheet(chat_id=target, start_dt=start_dt, end_dt=end_dt)
+                self._show_alert("Planilha Exportada", f"Planilha acumulada de hoje gerada com sucesso:\n\n{Path(excel_path).name}")
+            except Exception as e:
+                self._show_alert("Erro", f"Falha ao exportar planilha: {e}")
+
+    def _on_row_double_click(self, event):
+        """Abre modal com os detalhes completos da mensagem selecionada."""
+        selected_item = self.tree.focus()
+        if not selected_item:
+            return
+
+        values = self.tree.item(selected_item, "values")
+        if not values:
+            return
+
+        msg_id = values[0]
+        # Busca texto completo no banco
+        db = SessionLocal()
+        full_text = values[12]
+        try:
+            m = db.query(Message).filter_by(telegram_msg_id=int(msg_id)).first()
+            if m:
+                full_text = m.text_raw or ""
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+        # Modal flutuante
+        modal = ctk.CTkToplevel(self)
+        modal.title(f"Detalhes da Mensagem #{msg_id}")
+        modal.geometry("640x520")
+        modal.attributes("-topmost", True)
+
+        m_frame = ctk.CTkFrame(modal, corner_radius=12, fg_color="#0F172A")
+        m_frame.pack(fill="both", expand=True, padx=14, pady=14)
+
+        lbl_head = ctk.CTkLabel(
+            m_frame,
+            text=f"Mensagem #{msg_id} — {values[1]} (BRT)",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color="#38BDF8"
+        )
+        lbl_head.pack(anchor="w", padx=14, pady=(12, 4))
+
+        meta_txt = (
+            f"👤 Autor Anônimo: {values[13]}  |  🤖 Bot: {values[2]}  |  👑 Admin: {values[3]}\n"
+            f"📎 Mídia: {values[7]} ({values[8]})\n"
+            f"👀 Visualizações: {values[9]}  |  ❤️ Reações: {values[11]} (Total: {values[10]})\n"
+            f"🔗 Encaminhada: {values[4]} ({values[5]})"
+        )
+        lbl_meta = ctk.CTkLabel(m_frame, text=meta_txt, font=ctk.CTkFont(family="Segoe UI", size=11), text_color="#94A3B8", justify="left")
+        lbl_meta.pack(anchor="w", padx=14, pady=(0, 8))
+
+        lbl_body = ctk.CTkLabel(m_frame, text="Texto Completo da Postagem:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color="#E2E8F0")
+        lbl_body.pack(anchor="w", padx=14, pady=(0, 2))
+
+        txt_box = ctk.CTkTextbox(m_frame, height=220, font=ctk.CTkFont(family="Segoe UI", size=11))
+        txt_box.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+        txt_box.insert("1.0", full_text)
+        txt_box.configure(state="disabled")
+
+        btn_close = ctk.CTkButton(m_frame, text="Fechar", width=100, height=32, command=modal.destroy)
+        btn_close.pack(anchor="e", padx=14, pady=(0, 10))
 
     def _open_output_folder(self):
         """Abre a pasta local 'output' no Windows Explorer."""
@@ -345,183 +560,39 @@ class CollectionScreen(ctk.CTkFrame):
                 os.startfile(out_dir)
             else:
                 subprocess.Popen(["xdg-open", str(out_dir)])
-            self._log(f"Pasta output aberta: {out_dir}")
         except Exception as e:
-            self._log(f"Erro ao abrir pasta output: {e}")
+            self._show_alert("Erro", f"Não foi possível abrir a pasta output: {e}")
 
-    def _parse_dates(self) -> tuple[Optional[datetime], Optional[datetime]]:
-        start_date_str = self.entry_start_date.get().strip()
-        end_date_str = self.entry_end_date.get().strip()
-
-        start_h = self.opt_start_hour.get()
-        start_m = self.opt_start_min.get()
-
-        end_h = self.opt_end_hour.get()
-        end_m = self.opt_end_min.get()
-
+    def _open_log_file(self):
+        """Abre o arquivo de Log."""
+        from src.utils.paths import get_base_dir
+        log_file = get_base_dir() / "Log.txt"
         try:
-            dt_start_date = datetime.strptime(start_date_str, "%d/%m/%Y")
-            dt_start = dt_start_date.replace(hour=int(start_h), minute=int(start_m), second=0)
-        except ValueError:
-            self._log("⚠️ Data inicial inválida. Use o formato DD/MM/AAAA.")
-            return None, None
-
-        try:
-            dt_end_date = datetime.strptime(end_date_str, "%d/%m/%Y")
-            dt_end = dt_end_date.replace(hour=int(end_h), minute=int(end_m), second=59)
-        except ValueError:
-            self._log("⚠️ Data final inválida. Use o formato DD/MM/AAAA.")
-            return None, None
-
-        if dt_start > dt_end:
-            self._log("⚠️ A data inicial não pode ser posterior à data final.")
-            return None, None
-
-        return dt_start, dt_end
-
-    def _on_start_stop_clicked(self):
-        if self.is_collecting:
-            # Solicita cancelamento
-            self._log("Solicitando interrupção da coleta...")
-            if self.cancel_event:
-                self.cancel_event.set()
-            self.btn_start.configure(state="disabled")
-            return
-
-        target = self.entry_target.get().strip()
-        if not target:
-            self._log("⚠️ Insira o ID, Link ou @Username do grupo/canal para coletar.")
-            return
-
-        dt_start, dt_end = self._parse_dates()
-        if not dt_start or not dt_end:
-            return
-
-        if not self.auth_manager:
-            self._log("⚠️ Nenhuma sessão ativa do Telegram encontrada. Retorne à tela anterior para conectar.")
-            return
-
-        # Inicia a coleta
-        self.is_collecting = True
-        self.start_time = time.time()
-        self.cancel_event = asyncio.Event()
-
-        self.btn_start.configure(
-            text="⏹ Cancelar Coleta",
-            fg_color="#DC2626",
-            hover_color="#B91C1C",
-            state="normal"
-        )
-        self.btn_back.configure(state="disabled")
-        self.prog_bar.start()
-        self._update_clock()
-
-        self._log(f"Iniciando coleta em '{target}' de {dt_start.strftime('%d/%m/%Y %H:%M')} até {dt_end.strftime('%d/%m/%Y %H:%M')}...")
-
-        # Dispara thread de trabalho
-        threading.Thread(
-            target=self._run_collector_thread,
-            args=(target, dt_start, dt_end),
-            daemon=True
-        ).start()
-
-    def _run_collector_thread(self, target: str, dt_start: datetime, dt_end: datetime):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        def on_progress(scanned: int, saved: int, media: int, dt: Optional[datetime], status: str):
-            self.after(0, lambda: self._update_progress_ui(scanned, saved, media, dt, status))
-
-        result = None
-        client = None
-        try:
-            session_path = str(self.auth_manager.session_path)
-            api_id = self.auth_manager.api_id
-            api_hash = self.auth_manager.api_hash
-
-            client = TelegramClient(session_path, api_id, api_hash)
-            loop.run_until_complete(client.connect())
-
-            if not loop.run_until_complete(client.is_user_authorized()):
-                raise PermissionError("Sessão do Telegram não autorizada. Retorne à tela de credenciais para reconectar.")
-
-            result = loop.run_until_complete(
-                collect_messages(
-                    client=client,
-                    target_chat=target,
-                    start_dt_brt=dt_start,
-                    end_dt_brt=dt_end,
-                    download_media_files=True,
-                    progress_callback=on_progress,
-                    cancel_event=self.cancel_event
-                )
-            )
-
-            # Exportação para Excel (.xlsx) estruturado e anonimizado
-            self.after(0, lambda: self._log("📊 Gerando planilha Excel estruturada e anonimizada..."))
-            chat_id = result.get("chat_id") if result else None
-            chat_title = result.get("chat_title") if result else target
-
-            excel_path = export_to_tcc_spreadsheet(
-                chat_id=chat_id,
-                chat_title=chat_title,
-                start_dt=dt_start,
-                end_dt=dt_end
-            )
-
-            media_folder_name = result.get("media_folder_name", "") if result else ""
-            if media_folder_name:
-                self.after(0, lambda: self._log(f"📁 Mídias organizadas em: output/Mídias/{media_folder_name}"))
-            self.after(0, lambda: self._log(f"✅ Planilha salva com sucesso em:\n{excel_path}"))
-            self.after(0, lambda: self._log("🎉 Processo completo! Clique em 'Abrir Pasta Output' para visualizar os arquivos."))
-
+            if not log_file.exists():
+                with open(log_file, "w", encoding="utf-8") as f:
+                    f.write("Log inicializado.\n")
+            if sys.platform == "win32":
+                os.startfile(log_file)
+            else:
+                subprocess.Popen(["xdg-open", str(log_file)])
         except Exception as e:
-            from src.utils.logger import log_event
-            err_msg = str(e)
-            log_event(f"Erro durante a coleta: {err_msg}", level="ERRO", exc=e)
-            self.after(0, lambda: self._log(f"❌ Erro durante a coleta: {err_msg}"))
-        finally:
-            if client:
-                try:
-                    if client.is_connected():
-                        loop.run_until_complete(client.disconnect())
-                except Exception:
-                    pass
-                try:
-                    if hasattr(client, 'session') and hasattr(client.session, 'close'):
-                        client.session.close()
-                except Exception:
-                    pass
-            try:
-                loop.close()
-            except Exception:
-                pass
-            self.after(0, self._on_collection_finished)
+            self._show_alert("Erro", f"Não foi possível abrir Log.txt: {e}")
 
-    def _update_progress_ui(self, scanned: int, saved: int, media: int, dt: Optional[datetime], status: str):
-        self.lbl_cnt_scanned.configure(text=f"Mensagens Verificadas\n{scanned}")
-        self.lbl_cnt_saved.configure(text=f"Mensagens no Período\n{saved}")
-        self.lbl_cnt_media.configure(text=f"Mídias Baixadas\n{media}")
-        if status:
-            self._log(status)
+    def _show_alert(self, title: str, message: str):
+        """Exibe uma caixa de diálogo elegante e informativa."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(title)
+        dialog.geometry("440x220")
+        dialog.attributes("-topmost", True)
 
-    def _on_collection_finished(self):
-        self.is_collecting = False
-        if self.timer_after_id:
-            self.after_cancel(self.timer_after_id)
-            self.timer_after_id = None
+        f = ctk.CTkFrame(dialog, fg_color="#0F172A", corner_radius=10)
+        f.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.btn_start.configure(
-            text="🚀 Iniciar Coleta",
-            fg_color="#16A34A",
-            hover_color="#15803D",
-            state="normal"
-        )
-        self.btn_back.configure(state="normal")
-        self.prog_bar.stop()
-        self.prog_bar.set(0)
+        lbl = ctk.CTkLabel(f, text=title, font=ctk.CTkFont(size=14, weight="bold"), text_color="#38BDF8")
+        lbl.pack(padx=14, pady=(14, 6))
 
-    def _on_back_clicked(self):
-        if self.is_collecting:
-            return
-        self.on_back_callback()
+        msg_lbl = ctk.CTkLabel(f, text=message, font=ctk.CTkFont(size=11), text_color="#E2E8F0", wraplength=400)
+        msg_lbl.pack(padx=14, pady=(0, 14), fill="both", expand=True)
+
+        btn = ctk.CTkButton(f, text="OK", width=90, height=32, command=dialog.destroy)
+        btn.pack(pady=(0, 12))

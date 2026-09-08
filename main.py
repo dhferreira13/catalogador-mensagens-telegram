@@ -49,6 +49,11 @@ def main():
     parser_export = subparsers.add_parser("export-excel", help="Exporta mensagens catalogadas para planilha Excel formatada")
     parser_export.add_argument("--out", type=str, default=None, help="Caminho do arquivo Excel de saída")
 
+    # Comando: stream
+    parser_stream = subparsers.add_parser("stream", help="Inicia coleta contínua em tempo real (Live Stream)")
+    parser_stream.add_argument("--chat", type=str, default="-1301887300", help="Canal ou grupo alvo")
+    parser_stream.add_argument("--no-media", action="store_true", help="Desabilitar download de mídias")
+
     args = parser.parse_args()
 
     if args.gui or args.command is None:
@@ -78,6 +83,13 @@ def main():
         from src.exporter.excel_exporter import export_to_tcc_spreadsheet
         out_path = Path(args.out) if args.out else None
         export_to_tcc_spreadsheet(output_file=out_path)
+
+    elif args.command == "stream":
+        from coletor_tempo_real import main as run_stream
+        sys.argv = [sys.argv[0], "--target", args.chat]
+        if args.no_media:
+            sys.argv.append("--no-media")
+        run_stream()
 
     else:
         parser.print_help()

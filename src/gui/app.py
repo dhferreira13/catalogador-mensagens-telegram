@@ -29,16 +29,16 @@ class TelegramTCCApp(ctk.CTk):
         except Exception:
             pass
 
-        self.geometry("920x730")
-        self.minsize(860, 650)
+        self.geometry("1180x780")
+        self.minsize(980, 680)
 
         # Centraliza a janela na tela
         self.update_idletasks()
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        x = (screen_width - 920) // 2
-        y = (screen_height - 730) // 2
-        self.geometry(f"920x730+{x}+{y}")
+        x = max(0, (screen_width - 1180) // 2)
+        y = max(0, (screen_height - 780) // 2)
+        self.geometry(f"1180x780+{x}+{y}")
 
         self.auth_manager: Optional[TelegramAuthManager] = None
 
