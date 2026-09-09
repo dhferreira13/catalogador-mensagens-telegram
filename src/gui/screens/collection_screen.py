@@ -131,6 +131,8 @@ class CollectionScreen(ctk.CTkFrame):
         )
         self.entry_date.pack(side="left", padx=(0, 14))
         self.entry_date.insert(0, datetime.now(BRT).strftime("%d/%m/%Y"))
+        self.entry_date.bind("<FocusOut>", lambda e: self._refresh_cached_messages())
+        self.entry_date.bind("<Return>", lambda e: self._refresh_cached_messages())
 
         # Horário Limite Diário
         lbl_cutoff = ctk.CTkLabel(params_row, text="⏰ Horário Limite Diário:", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color="#E2E8F0")
@@ -313,14 +315,29 @@ class CollectionScreen(ctk.CTkFrame):
         # Evento de duplo clique
         self.tree.bind("<Double-1>", self._on_row_double_click)
 
+    def _refresh_cached_messages(self):
+        """Limpa e recarrega os dados do visor ao trocar a data de coleta."""
+        if hasattr(self, "tree"):
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            self._load_today_cached_messages()
+
     def _load_today_cached_messages(self):
-        """Carrega mensagens já coletadas hoje do banco de dados SQLite para o visor."""
+        """Carrega mensagens já coletadas do dia de referência do banco de dados SQLite para o visor."""
         init_db()
         db = SessionLocal()
         try:
-            today = datetime.now(BRT).date()
-            start_today = datetime.combine(today, datetime.min.time())
-            messages = db.query(Message).filter(Message.date_brt >= start_today).order_by(Message.date_brt.desc()).limit(150).all()
+            target_date = datetime.now(BRT).date()
+            if hasattr(self, "entry_date"):
+                try:
+                    d_str = self.entry_date.get().strip()
+                    if d_str:
+                        target_date = datetime.strptime(d_str, "%d/%m/%Y").date()
+                except Exception:
+                    pass
+            start_today = datetime.combine(target_date, datetime.min.time())
+            end_today = datetime.combine(target_date, datetime.max.time().replace(microsecond=0))
+            messages = db.query(Message).filter(Message.date_brt >= start_today, Message.date_brt <= end_today).order_by(Message.date_brt.desc()).limit(150).all()
 
             for i, m in enumerate(messages):
                 reacts_display = "-"
@@ -363,9 +380,10 @@ class CollectionScreen(ctk.CTkFrame):
             db.close()
 
     def _update_metrics_label(self):
-        cutoff = self.entry_cutoff.get().strip() or "23:59:59"
+        cutoff = self.entry_cutoff.get().strip() or "23:59:59" if hasattr(self, "entry_cutoff") else "23:59:59"
+        d_str = self.entry_date.get().strip() if hasattr(self, "entry_date") else datetime.now(BRT).strftime("%d/%m/%Y")
         self.lbl_metrics.configure(
-            text=f"Mensagens Hoje: {self.today_messages_count}  |  Mídias Hoje: {self.today_media_count}  |  Próximo Fechamento: {cutoff}"
+            text=f"Mensagens ({d_str}): {self.today_messages_count}  |  Mídias ({d_str}): {self.today_media_count}  |  Próximo Fechamento: {cutoff}"
         )
 
     def _on_toggle_streaming(self):
@@ -383,6 +401,15 @@ class CollectionScreen(ctk.CTkFrame):
             self._show_alert("Alvo Não Informado", "Por favor, digite o @username, link ou ID do grupo ou canal do Telegram que deseja monitorar.")
             return
 
+        date_str = self.entry_date.get().strip()
+        try:
+            target_date = datetime.strptime(date_str, "%d/%m/%Y").date()
+        except Exception:
+            target_date = datetime.now(BRT).date()
+            self.entry_date.delete(0, "end")
+            self.entry_date.insert(0, target_date.strftime("%d/%m/%Y"))
+
+        cutoff_str = self.entry_cutoff.get().strip() or "23:59:59"
         download_media = bool(self.chk_media.get())
 
         self.is_streaming = True
@@ -391,7 +418,7 @@ class CollectionScreen(ctk.CTkFrame):
             fg_color="#DC2626",
             hover_color="#B91C1C"
         )
-        self.lbl_status_badge.configure(text="🟢 AO VIVO - ESCUTANDO", text_color="#22C55E")
+        self.lbl_status_badge.configure(text=f"🟢 AO VIVO - {target_date.strftime('%d/%m/%Y')}", text_color="#22C55E")
 
         def on_msg_received(info: dict):
             self.after(0, lambda: self._add_message_to_grid(info))
@@ -402,6 +429,8 @@ class CollectionScreen(ctk.CTkFrame):
         self.collector = TelegramStreamCollector(
             client=self.auth_manager.client,
             target_chat=target,
+            target_date=target_date,
+            cutoff_time_str=cutoff_str,
             on_message_callback=on_msg_received,
             on_export_callback=on_export_done,
             log_callback=print,
@@ -474,22 +503,31 @@ class CollectionScreen(ctk.CTkFrame):
         self._show_alert("Fechamento Diário Concluído", f"A planilha oficial do dia foi gerada com sucesso:\n\n{file_name}\n\nSalva em: output/Planilhas de Catalogação/")
 
     def _on_manual_export_clicked(self):
-        """Gera a planilha acumulada do dia sob demanda."""
+        """Gera a planilha acumulada do dia de referência sob demanda."""
+        date_str = self.entry_date.get().strip() if hasattr(self, "entry_date") else None
+        try:
+            target_date = datetime.strptime(date_str, "%d/%m/%Y").date() if date_str else datetime.now(BRT).date()
+        except Exception:
+            target_date = datetime.now(BRT).date()
+
         if self.collector:
             path = self.collector.trigger_manual_export()
             if path:
-                self._show_alert("Planilha Exportada", f"Planilha do dia gerada com sucesso:\n\n{Path(path).name}")
+                self._show_alert("Planilha Exportada", f"Planilha do dia {target_date.strftime('%d/%m/%Y')} gerada com sucesso:\n\n{Path(path).name}")
             else:
                 self._show_alert("Aviso", "Não foi possível gerar a planilha no momento.")
         else:
-            # Exporta diretamente pelo banco de dados
-            today = datetime.now(BRT).date()
-            start_dt = datetime.combine(today, datetime.min.time())
-            end_dt = datetime.now(BRT)
+            # Exporta diretamente pelo banco de dados para a data informada
+            start_dt = datetime.combine(target_date, datetime.min.time())
+            now_brt = datetime.now(BRT)
+            if target_date == now_brt.date():
+                end_dt = now_brt
+            else:
+                end_dt = datetime.combine(target_date, datetime.max.time().replace(microsecond=0))
             target = self.entry_target.get().strip() or None
             try:
                 excel_path = export_to_tcc_spreadsheet(chat_id=target, start_dt=start_dt, end_dt=end_dt)
-                self._show_alert("Planilha Exportada", f"Planilha acumulada de hoje gerada com sucesso:\n\n{Path(excel_path).name}")
+                self._show_alert("Planilha Exportada", f"Planilha do dia {target_date.strftime('%d/%m/%Y')} gerada com sucesso:\n\n{Path(excel_path).name}")
             except Exception as e:
                 self._show_alert("Erro", f"Falha ao exportar planilha: {e}")
 

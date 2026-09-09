@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -32,6 +32,8 @@ class TelegramStreamCollector:
         self,
         client: TelegramClient,
         target_chat: str,
+        target_date: Optional[date] = None,
+        cutoff_time_str: str = "23:59:59",
         on_message_callback: Optional[Callable[[dict], None]] = None,
         on_export_callback: Optional[Callable[[str], None]] = None,
         log_callback: Optional[Callable[[str], None]] = None,
@@ -39,6 +41,8 @@ class TelegramStreamCollector:
     ):
         self.client = client
         self.target_chat = target_chat
+        self.target_date = target_date or datetime.now(BRT).date()
+        self.cutoff_time_str = cutoff_time_str or "23:59:59"
         self.on_message_cb = on_message_callback
         self.on_export_cb = on_export_callback
         self.log_cb = log_callback or print
@@ -52,8 +56,8 @@ class TelegramStreamCollector:
         self.is_broadcast = False
         self._rollover_task = None
 
-        # Estatísticas diárias
-        self.today_date = datetime.now(BRT).date()
+        # Estatísticas diárias atreladas à data de coleta
+        self.today_date = self.target_date
         self.today_messages_count = 0
         self.today_media_count = 0
 
@@ -285,34 +289,45 @@ class TelegramStreamCollector:
         finally:
             db.close()
 
-        if not max_id:
-            self.log("Nenhum histórico prévio encontrado para sincronização de lacuna. Modo tempo real ativado.")
-            return
+        start_day_brt = datetime.combine(self.target_date, datetime.min.time(), tzinfo=BRT)
+        start_day_utc = start_day_brt.astimezone(timezone.utc)
 
-        self.log(f"Verificando mensagens recebidas durante período offline (último ID registrado: #{max_id})...")
         gap_count = 0
         try:
-            # Pede mensagens mais recentes que max_id
-            async for tg_msg in self.client.iter_messages(self.entity, min_id=max_id, reverse=True):
-                await self.process_single_message(tg_msg)
-                gap_count += 1
+            if max_id:
+                self.log(f"Verificando mensagens recebidas durante período offline (último ID registrado: #{max_id})...")
+                async for tg_msg in self.client.iter_messages(self.entity, min_id=max_id, reverse=True):
+                    await self.process_single_message(tg_msg)
+                    gap_count += 1
+            else:
+                self.log(f"Recuperando histórico a partir do início do dia de coleta ({self.target_date.strftime('%d/%m/%Y')} 00:00:00 BRT)...")
+                async for tg_msg in self.client.iter_messages(self.entity, offset_date=start_day_utc, reverse=True):
+                    await self.process_single_message(tg_msg)
+                    gap_count += 1
+
             if gap_count > 0:
-                self.log(f"Sincronização de lacuna concluída: {gap_count} mensagens recuperadas!")
+                self.log(f"Sincronização concluída: {gap_count} mensagens sincronizadas para o dia de coleta!")
             else:
                 self.log("Banco de dados 100% atualizado. Nenhuma mensagem pendente no período offline.")
         except Exception as e:
-            self.log(f"Aviso durante sincronização de lacuna: {e}")
+            self.log(f"Aviso durante sincronização: {e}")
 
     async def _daily_rollover_loop(self):
         """
-        Monitora a virada do dia (23:59:59 BRT) e consolida a planilha Excel do dia anterior.
+        Monitora a virada do dia ou horário limite diário e consolida a planilha Excel.
         """
         while self.is_running:
             now_brt = datetime.now(BRT)
-            # Próximo fechamento às 23:59:59
-            target_time = now_brt.replace(hour=23, minute=59, second=59, microsecond=0)
+            try:
+                c_parts = [int(p) for p in self.cutoff_time_str.split(":")]
+                c_h = c_parts[0] if len(c_parts) > 0 else 23
+                c_m = c_parts[1] if len(c_parts) > 1 else 59
+                c_s = c_parts[2] if len(c_parts) > 2 else 59
+            except Exception:
+                c_h, c_m, c_s = 23, 59, 59
+
+            target_time = now_brt.replace(hour=c_h, minute=c_m, second=c_s, microsecond=0)
             if now_brt >= target_time:
-                # Se já passou das 23:59:59, mira nas 23:59:59 do dia seguinte
                 target_time += timedelta(days=1)
 
             seconds_to_wait = (target_time - now_brt).total_seconds()
@@ -330,7 +345,7 @@ class TelegramStreamCollector:
             start_dt = datetime.combine(closed_day, datetime.min.time())
             end_dt = datetime.combine(closed_day, datetime.max.time().replace(microsecond=0))
 
-            self.log(f"⏰ [VIRADA DE DIA 23:59:59] Consolidando planilha Excel de {closed_day.strftime('%d/%m/%Y')}...")
+            self.log(f"⏰ [FECHAMENTO DIÁRIO {self.cutoff_time_str}] Consolidando planilha Excel de {closed_day.strftime('%d/%m/%Y')}...")
             try:
                 excel_path = export_to_tcc_spreadsheet(
                     chat_id=self.chat_id_str,
@@ -348,11 +363,16 @@ class TelegramStreamCollector:
             await asyncio.sleep(5)
 
     def trigger_manual_export(self) -> Optional[str]:
-        """Permite exportar a planilha do dia atual sob demanda (ex: via menu da bandeja)."""
-        today = datetime.now(BRT).date()
-        start_dt = datetime.combine(today, datetime.min.time())
-        end_dt = datetime.now(BRT)
-        self.log(f"Exportando planilha parcial do dia ({today.strftime('%d/%m/%Y')})...")
+        """Permite exportar a planilha do dia de coleta sob demanda."""
+        target_d = self.target_date or datetime.now(BRT).date()
+        start_dt = datetime.combine(target_d, datetime.min.time())
+        now_brt = datetime.now(BRT)
+        if target_d == now_brt.date():
+            end_dt = now_brt
+        else:
+            end_dt = datetime.combine(target_d, datetime.max.time().replace(microsecond=0))
+
+        self.log(f"Exportando planilha sob demanda do dia ({target_d.strftime('%d/%m/%Y')})...")
         try:
             excel_path = export_to_tcc_spreadsheet(
                 chat_id=self.chat_id_str,
@@ -360,10 +380,10 @@ class TelegramStreamCollector:
                 start_dt=start_dt,
                 end_dt=end_dt
             )
-            self.log(f"Planilha parcial gerada com sucesso: {excel_path}")
+            self.log(f"Planilha gerada com sucesso: {excel_path}")
             return excel_path
         except Exception as e:
-            self.log(f"Erro ao exportar planilha parcial: {e}")
+            self.log(f"Erro ao exportar planilha: {e}")
             return None
 
     async def start(self):
